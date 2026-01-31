@@ -5,7 +5,6 @@ import { api } from "@shared/routes";
 import { insertScanSchema } from "@shared/schema";
 import axios from "axios";
 import whois from "whois-json";
-import validUrl from "valid-url";
 import { z } from "zod";
 
 export async function registerRoutes(
@@ -18,9 +17,16 @@ export async function registerRoutes(
       const input = insertScanSchema.parse(req.body);
       
       // Basic validation
-      if (!validUrl.isWebUri(input.url)) {
-        return res.status(400).json({ message: "Invalid URL format" });
-      }
+      try {
+  const parsed = new URL(input.url);
+
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error();
+  }
+} catch {
+  return res.status(400).json({ message: "Invalid URL format" });
+}
+
 
       // Create initial pending scan
       const scan = await storage.createScan(input);
@@ -112,32 +118,36 @@ function analyzeKeywords(url: string) {
 async function analyzeExpansion(url: string) {
   const shorteners = ['bit.ly', 'tinyurl.com', 't.co', 'goo.gl', 'is.gd', 'buff.ly'];
   const isShortened = shorteners.some(s => url.includes(s));
-  
-  let expandedUrl = null;
+
+  let expandedUrl: string | null = null;
   const redirectChain: string[] = [];
-  
-  if (isShortened || url.length < 25) { // Simple heuristic
+
+  if (isShortened) {
     try {
-      const response = await axios.head(url, {
+      const response = await axios.get(url, {
         maxRedirects: 5,
-        validateStatus: () => true // Accept all status codes
+        timeout: 5000,
+        validateStatus: () => true,
       });
-      // Axios follows redirects by default, so response.request.res.responseUrl is usually the final one
-      // But for HEAD it might be different. Let's rely on checking if the final URL is different
-      if (response.request.res && response.request.res.responseUrl && response.request.res.responseUrl !== url) {
-        expandedUrl = response.request.res.responseUrl;
-      }
-    } catch (e) {
-      console.log("Expansion failed", e);
+
+      const finalUrl =
+        response.request?.res?.responseUrl ||
+        response.request?.responseURL ||
+        null;
+
+      expandedUrl = finalUrl && finalUrl !== url ? finalUrl : null;
+    } catch (err) {
+      console.log("URL expansion blocked by shortener");
     }
   }
-  
+
   return {
     isShortened,
     expandedUrl,
-    redirectChain // Keeping empty for now as axios auto-follows
+    redirectChain,
   };
 }
+
 
 async function analyzeSafeBrowsing(url: string) {
   const apiKey = process.env.GOOGLE_SAFE_BROWSING_API_KEY;
@@ -204,6 +214,7 @@ async function analyzeDomain(url: string) {
   }
 
   return {
+    domain,
     domainAgeDays,
     hasHttps,
     registrar,
@@ -212,31 +223,125 @@ async function analyzeDomain(url: string) {
 }
 
 function calculateRisk(l1: any, l2: any, l3: any, l4: any) {
+  // ====================
+  // TRUSTED DOMAIN BYPASS
+  // ====================
+  const trustedDomains = [
+  // 🔍 Search & Tech
+  "google.com",
+  "bing.com",
+  "duckduckgo.com",
+  "microsoft.com",
+  "apple.com",
+
+  // 🎥 Video & Streaming
+  "youtube.com",
+  "netflix.com",
+  "primevideo.com",
+  "hotstar.com",
+
+  // 💼 Professional & Social
+  "linkedin.com",
+  "twitter.com",
+  "facebook.com",
+  "instagram.com",
+
+  // 🛒 E-commerce
+  "amazon.com",
+  "flipkart.com",
+  "myntra.com",
+  "meesho.com",
+  "ajio.com",
+
+  // 💬 Communication
+  "gmail.com",
+  "outlook.com",
+  "whatsapp.com",
+  "telegram.org",
+  "discord.com",
+
+  // 👩‍💻 Developer & Learning
+  "github.com",
+  "gitlab.com",
+  "stackoverflow.com",
+  "geeksforgeeks.org",
+  "w3schools.com",
+
+  // 📚 Knowledge & Education
+  "wikipedia.org",
+  "coursera.org",
+  "udemy.com",
+  "edx.org",
+
+  // 🏦 Payments & Finance
+  "paypal.com",
+  "paytm.com",
+  "phonepe.com",
+  "googlepay.com",
+
+  // 🏛️ Government / Official
+  "india.gov.in",
+  "uidai.gov.in",
+  "nasa.gov",
+  "usa.gov"
+];
+
+
+  if (
+    l4.domain &&
+    trustedDomains.some(
+      d => l4.domain === d || l4.domain.endsWith("." + d)
+    )
+  ) {
+    return { score: 0.0, riskLevel: "Safe" };
+  }
+
   let score = 0;
-  
+
+  // --------------------
   // Level 1: Keywords
+  // --------------------
   score += l1.riskScore;
-  
-  // Level 2: Hidden behind shortener
+
+  // --------------------
+  // Level 2: Shortened URL
+  // --------------------
   if (l2.isShortened) score += 0.15;
-  
-  // Level 3: Safe Browsing (Critical)
-  if (l3.safeBrowsingMatch) score = 1.0; // Immediate max risk
-  
+
+  // --------------------
+  // Level 3: Safe Browsing
+  // --------------------
+  if (l3.safeBrowsingMatch) {
+    return { score: 1.0, riskLevel: "Spam" };
+  }
+
+  // --------------------
   // Level 4: Domain Trust
+  // --------------------
   if (!l4.hasHttps) score += 0.15;
-  if (l4.domainAgeDays !== null && l4.domainAgeDays < 30) score += 0.25;
-  
-  // Cap score
+
+  if (l4.domainAgeDays !== null && l4.domainAgeDays < 30) {
+    score += 0.25;
+  }
+
+  if (l4.domainAgeDays === null) {
+    score += 0.00;
+  }
+
+  const riskyTlds = [".xyz", ".top", ".site", ".online", ".click"];
+  if (l4.domain && riskyTlds.some(tld => l4.domain.endsWith(tld))) {
+    score += 0.15;
+  }
+
+  // --------------------
+  // Final result
+  // --------------------
   score = Math.min(score, 1.0);
-  
+
   let riskLevel = "Safe";
-  if (score > 0.75) riskLevel = "Spam";
-  else if (score > 0.50) riskLevel = "Suspicious";
-  else if (score > 0.25) riskLevel = "Low Risk";
-  
-  // Override if Safe Browsing matched
-  if (l3.safeBrowsingMatch) riskLevel = "Spam";
+  if (score >= 0.75) riskLevel = "Spam";
+  else if (score >= 0.5) riskLevel = "Suspicious";
+  else if (score >= 0.25) riskLevel = "Low Risk";
 
   return { score, riskLevel };
 }

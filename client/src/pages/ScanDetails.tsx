@@ -8,10 +8,21 @@ import { motion } from "framer-motion";
 import { Badge } from "@/components/ui/Badge";
 import { format } from "date-fns";
 
+
+
 export default function ScanDetails() {
   const [, params] = useRoute("/scans/:id");
   const id = parseInt(params?.id || "0");
   const { data: scan, isLoading, error } = useScan(id);
+
+  const handleShareReport = () => {
+    if (!scan) return;
+
+    const shareUrl = `${window.location.origin}/report/${scan.id}`;
+
+    navigator.clipboard.writeText(shareUrl);
+    alert("Shareable report link copied to clipboard!");
+  };
 
   if (isLoading) {
     return (
@@ -65,11 +76,23 @@ export default function ScanDetails() {
             <div className="relative z-10">
               <div className="flex items-center gap-3 mb-4">
                 {isPending ? (
-                  <Badge variant="neutral" className="animate-pulse">ANALYSIS IN PROGRESS</Badge>
+                  <span className="px-3 py-1 rounded-full text-xs font-mono bg-muted text-muted-foreground animate-pulse">
+  ANALYSIS IN PROGRESS
+</span>
+
                 ) : (
-                  <Badge variant={scan.riskLevel === "Safe" ? "safe" : scan.riskLevel === "Low Risk" ? "low" : "spam"}>
-                    {scan.riskLevel?.toUpperCase()}
-                  </Badge>
+                  <span
+  className={`px-3 py-1 rounded-full text-xs font-mono ${
+    scan.riskLevel === "Safe"
+      ? "bg-emerald-500/15 text-emerald-400"
+      : scan.riskLevel === "Low Risk"
+      ? "bg-yellow-500/15 text-yellow-400"
+      : "bg-red-500/15 text-red-400"
+  }`}
+>
+  {scan.riskLevel?.toUpperCase()}
+</span>
+
                 )}
                 <span className="text-xs text-muted-foreground font-mono">
                   {scan.createdAt && format(new Date(scan.createdAt), "PPP p")}
@@ -89,9 +112,12 @@ export default function ScanDetails() {
                 >
                   Visit URL <ExternalLink className="w-3 h-3" />
                 </a>
-                <button className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary hover:bg-secondary/80 text-secondary-foreground text-sm font-medium transition-colors">
-                  Share Report <Share2 className="w-3 h-3" />
-                </button>
+                <button
+  onClick={handleShareReport}
+  className="flex items-center gap-2 px-4 py-2 rounded-lg border"
+>
+  Share Report
+</button>
               </div>
             </div>
           </div>
@@ -161,7 +187,7 @@ export default function ScanDetails() {
                 </div>
                 {details.level2.isShortened && (
                   <div className="flex flex-col gap-1 mt-1 p-2 bg-black/20 rounded">
-                    <span className="text-xs text-muted-foreground">Destination:</span>
+                    <span className="text-xs text-muted-foreground">Destination:Unable to resolve (restricted by shortener)</span>
                     <span className="break-all text-xs text-blue-300">{details.level2.expandedUrl}</span>
                   </div>
                 )}
@@ -185,7 +211,10 @@ export default function ScanDetails() {
                    <>
                      <ShieldAlert className="w-12 h-12 text-red-500 mb-2" />
                      <div className="font-bold text-red-500">THREAT DETECTED</div>
-                     <Badge variant="spam">{details.level3.threatType || "MALWARE"}</Badge>
+                     <span className="px-2 py-1 rounded text-xs bg-red-500/15 text-red-400">
+  {details.level3.threatType || "MALWARE"}
+</span>
+
                    </>
                 ) : (
                   <>
